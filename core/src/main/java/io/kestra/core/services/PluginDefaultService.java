@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -61,6 +62,7 @@ public class PluginDefaultService {
     private static final ObjectMapper OBJECT_MAPPER = JacksonMapper.ofYaml().copy()
         .setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
     private static final String PLUGIN_DEFAULTS_FIELD = "pluginDefaults";
+    private static final String PLUGIN_DEFAULTS_REF_FIELD = "pluginDefaultsRef";
 
     private static final TypeReference<List<PluginDefault>> PLUGIN_DEFAULTS_TYPE_REF = new TypeReference<>() {
     };
@@ -114,12 +116,15 @@ public class PluginDefaultService {
     /**
      * Gets the flow-level defaults values.
      * <p>
-     * The {@code forced} flag is intentionally ignored at flow level: only administrators can enforce
-     * plugin defaults (via namespace, tenant, or global configuration). Any {@code forced: true} entry
-     * in a flow's {@code pluginDefaults} section is silently treated as {@code forced: false}.
+     * For type-matched defaults (no {@code ref}), the {@code forced} flag is intentionally ignored at
+     * flow level: only administrators can enforce plugin defaults (via namespace, tenant, or global
+     * configuration). Any {@code forced: true} type-matched entry is silently treated as {@code forced: false}.
+     * <p>
+     * For named ({@code ref}) bundles, {@code forced} is honored: a flow can declare a referenced bundle
+     * that overrides task-level properties when explicitly opted into via {@code pluginDefaultsRef}.
      *
      * @param flow the flow to extract default
-     * @return list of {@code PluginDefault} ordered by most important first, all with forced=false
+     * @return list of {@code PluginDefault} ordered by most important first
      */
     protected List<PluginDefault> getFlowDefaults(final Map<String, Object> flow) {
         Object defaults = flow.get(PLUGIN_DEFAULTS_FIELD);
@@ -129,19 +134,21 @@ public class PluginDefaultService {
 
         List<PluginDefault> flowDefaults = OBJECT_MAPPER.convertValue(defaults, PLUGIN_DEFAULTS_TYPE_REF);
 
-        boolean hasForced = flowDefaults.stream().anyMatch(PluginDefault::isForced);
-        if (hasForced) {
+        boolean hasForcedTypeDefault = flowDefaults.stream()
+            .anyMatch(entry -> entry.isForced() && entry.getRef() == null);
+        if (hasForcedTypeDefault) {
             log.warn(
-                "Flow '{}' in namespace '{}' uses 'forced: true' in pluginDefaults." +
-                " The 'forced' flag is not supported at flow level and will be ignored." +
+                "Flow '{}' in namespace '{}' uses 'forced: true' in a type-matched pluginDefaults entry." +
+                " The 'forced' flag is not supported for type-matched flow defaults and will be ignored." +
                 " Remove it from the flow to suppress this warning.",
                 flow.get("id"),
                 flow.get("namespace")
             );
         }
 
+        // keep 'forced' for named (ref) bundles, strip it for type-matched defaults
         return flowDefaults.stream()
-            .map(entry -> entry.toBuilder().forced(false).build())
+            .map(entry -> entry.getRef() != null ? entry : entry.toBuilder().forced(false).build())
             .toList();
     }
 
@@ -426,7 +433,20 @@ public class PluginDefaultService {
 
         addAliases(allDefaults);
 
-        Map<Boolean, List<PluginDefault>> allDefaultsGroup = allDefaults
+        // split named (ref) bundles from type-matched defaults: a 'ref' bundle is applied only to plugins
+        // that explicitly opt in via 'pluginDefaultsRef', never by type matching.
+        Map<Boolean, List<PluginDefault>> byHasRef = allDefaults
+            .stream()
+            .collect(Collectors.partitioningBy(pluginDefault -> pluginDefault.getRef() != null));
+        List<PluginDefault> typeDefaults = byHasRef.get(false);
+
+        // one winner per ref (shadowing): a forced bundle always wins over a non-forced one. Among forced
+        // bundles the lowest-priority (admin) level wins so an enforced bundle cannot be bypassed by a
+        // higher-level forced override; among non-forced bundles the highest-priority level wins.
+        // (allDefaults is ordered most-important-first: flow, namespace, global.)
+        Map<String, PluginDefault> refWinners = resolveRefWinners(byHasRef.get(true));
+
+        Map<Boolean, List<PluginDefault>> allDefaultsGroup = typeDefaults
             .stream()
             .collect(Collectors.groupingBy(PluginDefault::isForced, Collectors.toList()));
 
@@ -450,12 +470,38 @@ public class PluginDefaultService {
             flowAsMap = (Map<String, Object>) recursiveDefaults(flowAsMap, forced);
         }
 
+        // named (ref) bundles applied last; they target only the disjoint set of plugins declaring 'pluginDefaultsRef'
+        if (!refWinners.isEmpty()) {
+            flowAsMap = (Map<String, Object>) recursiveRefDefaults(flowAsMap, refWinners);
+        }
+
         if (pluginDefaults != null) {
             flowAsMap.put(PLUGIN_DEFAULTS_FIELD, pluginDefaults);
         }
 
         return flowAsMap;
 
+    }
+
+    /**
+     * Resolves the single winning bundle for each {@code ref}, given the list of all named defaults ordered
+     * most-important-first (flow, namespace, global). A {@code forced} bundle always wins over a non-forced one.
+     * Among forced bundles the lowest-priority (admin) level wins — the last forced occurrence — so an enforced
+     * bundle cannot be bypassed by a higher-level forced override. Among non-forced bundles the highest-priority
+     * level wins — the first occurrence.
+     */
+    private static Map<String, PluginDefault> resolveRefWinners(List<PluginDefault> refDefaults) {
+        Map<String, List<PluginDefault>> byRef = refDefaults
+            .stream()
+            .collect(Collectors.groupingBy(PluginDefault::getRef, LinkedHashMap::new, Collectors.toList()));
+
+        Map<String, PluginDefault> winners = new LinkedHashMap<>();
+        byRef.forEach((ref, candidates) ->
+        {
+            List<PluginDefault> forced = candidates.stream().filter(PluginDefault::isForced).toList();
+            winners.put(ref, forced.isEmpty() ? candidates.getFirst() : forced.getLast());
+        });
+        return winners;
     }
 
     /**
@@ -544,6 +590,11 @@ public class PluginDefaultService {
 
     @SuppressWarnings("unchecked")
     private Map<?, ?> defaults(Map<?, ?> plugin, Map<String, List<PluginDefault>> defaults) {
+        // a plugin opting into a named bundle ('pluginDefaultsRef') receives only that bundle, never type-matched defaults
+        if (plugin.containsKey(PLUGIN_DEFAULTS_REF_FIELD)) {
+            return plugin;
+        }
+
         Object type = plugin.get("type");
         if (!(type instanceof String pluginType)) {
             return plugin;
@@ -570,5 +621,61 @@ public class PluginDefaultService {
         }
 
         return result;
+    }
+
+    /**
+     * Traverses the flow and applies named ({@code ref}) bundles to every plugin that opts in via
+     * {@code pluginDefaultsRef}. Mirrors {@link #recursiveDefaults(Object, Map)} but matches on the
+     * referenced id instead of the plugin type.
+     */
+    @VisibleForTesting
+    Object recursiveRefDefaults(Object object, Map<String, PluginDefault> refDefaults) {
+        if (object instanceof Map<?, ?> value) {
+            value = value
+                .entrySet()
+                .stream()
+                .map(
+                    e -> new AbstractMap.SimpleEntry<>(
+                        e.getKey(),
+                        recursiveRefDefaults(e.getValue(), refDefaults)
+                    )
+                )
+                .collect(HashMap::new, (m, v) -> m.put(v.getKey(), v.getValue()), HashMap::putAll);
+
+            if (value.containsKey(PLUGIN_DEFAULTS_REF_FIELD)) {
+                value = refDefaults(value, refDefaults);
+            }
+
+            return value;
+        } else if (object instanceof Collection<?> value) {
+            return value
+                .stream()
+                .map(r -> recursiveRefDefaults(r, refDefaults))
+                .toList();
+        } else {
+            return object;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<?, ?> refDefaults(Map<?, ?> plugin, Map<String, PluginDefault> refDefaults) {
+        Object ref = plugin.get(PLUGIN_DEFAULTS_REF_FIELD);
+        if (!(ref instanceof String refId)) {
+            return plugin;
+        }
+
+        PluginDefault pluginDefault = refDefaults.get(refId);
+        if (pluginDefault == null) {
+            log.warn("No pluginDefaults bundle found for ref '{}' referenced by plugin '{}'", refId, plugin.get("type"));
+            return plugin;
+        }
+
+        Map<String, Object> result = (Map<String, Object>) plugin;
+        if (pluginDefault.isForced()) {
+            // forced bundle overrides the plugin's own values
+            return MapUtils.deepMerge(result, pluginDefault.getValues());
+        }
+        // non-forced bundle yields to the plugin's explicit values
+        return MapUtils.deepMerge(pluginDefault.getValues(), result);
     }
 }

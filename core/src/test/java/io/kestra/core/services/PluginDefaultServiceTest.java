@@ -137,6 +137,43 @@ class PluginDefaultServiceTest {
     }
 
     @Test
+    void shouldApplyRefBundleToNestedTaskRunner() {
+        // a nested taskRunner carrying its own pluginDefaultsRef receives the referenced bundle
+        Map<String, Object> flow = Map.of(
+            "id", "test",
+            "namespace", "type",
+            "tasks", List.of(
+                Map.of(
+                    "id", "my-task",
+                    "type", "io.kestra.test",
+                    "taskRunner", Map.of("type", "io.kestra.runner", "pluginDefaultsRef", "runner-cfg")
+                )
+            )
+        );
+        Map<String, PluginDefault> refDefaults = Map.of(
+            "runner-cfg", new PluginDefault("io.kestra.runner", false, "runner-cfg", Map.of("cpus", 4))
+        );
+
+        // When
+        Object result = pluginDefaultService.recursiveRefDefaults(flow, refDefaults);
+
+        // Then
+        Assertions.assertEquals(
+            Map.of(
+                "id", "test",
+                "namespace", "type",
+                "tasks", List.of(
+                    Map.of(
+                        "id", "my-task",
+                        "type", "io.kestra.test",
+                        "taskRunner", Map.of("type", "io.kestra.runner", "pluginDefaultsRef", "runner-cfg", "cpus", 4)
+                    )
+                )
+            ), result
+        );
+    }
+
+    @Test
     public void injectFlowAndGlobals() throws FlowProcessingException {
         String source = String.format(
             """
@@ -383,6 +420,218 @@ class PluginDefaultServiceTest {
         } finally {
             serviceLogger.detachAppender(appender);
         }
+    }
+
+    @Test
+    void shouldApplyRefBundleOnlyToReferencingPlugin() throws FlowProcessingException {
+        // Given — same-type tasks; only one opts into the named bundle
+        String source = """
+                id: ref-test
+                namespace: io.kestra.tests
+
+                tasks:
+                - id: referencing
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  pluginDefaultsRef: cfg
+                - id: plain
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+
+                pluginDefaults:
+                - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  ref: cfg
+                  values:
+                    value: 7
+            """;
+
+        // When
+        var tenant = TestsUtils.randomTenant(PluginDefaultServiceTest.class.getSimpleName());
+        FlowWithSource injected = pluginDefaultService.parseFlowWithAllDefaults(tenant, source, false);
+
+        // Then
+        assertThat(((DefaultTester) injected.getTasks().getFirst()).getValue(), is(7));
+        assertThat(((DefaultTester) injected.getTasks().get(1)).getValue(), is((Integer) null));
+    }
+
+    @Test
+    void shouldSuppressTypeMatchedDefaultWhenRefIsSet() throws FlowProcessingException {
+        // Given — a type-matched default AND a ref bundle; the referencing task must get only the ref bundle
+        String source = """
+                id: ref-suppress-test
+                namespace: io.kestra.tests
+
+                tasks:
+                - id: referencing
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  pluginDefaultsRef: cfg
+
+                pluginDefaults:
+                - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  values:
+                    value: 1
+                    defaultValue: typed
+                - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  ref: cfg
+                  values:
+                    value: 7
+            """;
+
+        // When
+        var tenant = TestsUtils.randomTenant(PluginDefaultServiceTest.class.getSimpleName());
+        FlowWithSource injected = pluginDefaultService.parseFlowWithAllDefaults(tenant, source, false);
+
+        // Then — ref bundle applied, type-matched default ('defaultValue') suppressed
+        assertThat(((DefaultTester) injected.getTasks().getFirst()).getValue(), is(7));
+        assertThat(((DefaultTester) injected.getTasks().getFirst()).getDefaultValue(), is("default"));
+    }
+
+    @Test
+    void shouldYieldToTaskValueForNonForcedRef() throws FlowProcessingException {
+        // Given — non-forced ref bundle, task sets the property explicitly
+        String source = """
+                id: ref-nonforced-test
+                namespace: io.kestra.tests
+
+                tasks:
+                - id: referencing
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  pluginDefaultsRef: cfg
+                  set: 1
+
+                pluginDefaults:
+                - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  ref: cfg
+                  values:
+                    set: 99
+            """;
+
+        // When
+        var tenant = TestsUtils.randomTenant(PluginDefaultServiceTest.class.getSimpleName());
+        FlowWithSource injected = pluginDefaultService.parseFlowWithAllDefaults(tenant, source, false);
+
+        // Then — explicit task value wins
+        assertThat(((DefaultTester) injected.getTasks().getFirst()).getSet(), is(1));
+    }
+
+    @Test
+    void shouldOverrideTaskValueForForcedRef() throws FlowProcessingException {
+        // Given — forced ref bundle (honored at flow level for named bundles), task sets the property explicitly
+        String source = """
+                id: ref-forced-test
+                namespace: io.kestra.tests
+
+                tasks:
+                - id: referencing
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  pluginDefaultsRef: cfg
+                  set: 1
+
+                pluginDefaults:
+                - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  ref: cfg
+                  forced: true
+                  values:
+                    set: 99
+            """;
+
+        // When
+        var tenant = TestsUtils.randomTenant(PluginDefaultServiceTest.class.getSimpleName());
+        FlowWithSource injected = pluginDefaultService.parseFlowWithAllDefaults(tenant, source, false);
+
+        // Then — forced bundle overrides the explicit task value
+        assertThat(((DefaultTester) injected.getTasks().getFirst()).getSet(), is(99));
+    }
+
+    @Test
+    void shouldIgnoreUnknownRef() throws FlowProcessingException {
+        // Given — task references a ref that does not exist
+        String source = """
+                id: ref-unknown-test
+                namespace: io.kestra.tests
+
+                tasks:
+                - id: referencing
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  pluginDefaultsRef: nope
+                  set: 5
+
+                pluginDefaults:
+                - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  ref: cfg
+                  values:
+                    value: 7
+            """;
+
+        // When
+        var tenant = TestsUtils.randomTenant(PluginDefaultServiceTest.class.getSimpleName());
+        FlowWithSource injected = pluginDefaultService.parseFlowWithAllDefaults(tenant, source, false);
+
+        // Then — task unchanged; the 'cfg' bundle is not applied by type either
+        assertThat(((DefaultTester) injected.getTasks().getFirst()).getSet(), is(5));
+        assertThat(((DefaultTester) injected.getTasks().getFirst()).getValue(), is((Integer) null));
+        assertThat(injected.getTasks().getFirst().getPluginDefaultsRef(), is("nope"));
+    }
+
+    @Test
+    void shouldStrictParseRefFields() throws FlowProcessingException {
+        // Given — strict parsing must accept the new fields: pluginDefaultsRef on the task, ref + forced on the bundle
+        var tenant = TestsUtils.randomTenant(PluginDefaultServiceTest.class.getSimpleName());
+        GenericFlow flow = GenericFlow.fromYaml(
+            tenant, """
+                  id: ref-strict-test
+                  namespace: io.kestra.tests
+
+                  tasks:
+                  - id: referencing
+                    type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                    pluginDefaultsRef: cfg
+                    set: 1
+
+                  pluginDefaults:
+                  - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                    ref: cfg
+                    forced: true
+                    values:
+                      set: 99
+                """
+        );
+
+        // When — strictParsing = true
+        FlowWithSource injected = pluginDefaultService.injectAllDefaults(flow, true);
+
+        // Then
+        assertThat(((DefaultTester) injected.getTasks().getFirst()).getSet(), is(99));
+        assertThat(injected.getTasks().getFirst().getPluginDefaultsRef(), is("cfg"));
+    }
+
+    @Test
+    void shouldApplyRefBundleToTrigger() throws FlowProcessingException {
+        // Given — a trigger opts into a named bundle
+        String source = """
+                id: ref-trigger-test
+                namespace: io.kestra.tests
+
+                triggers:
+                - id: trigger
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTriggerTester
+                  pluginDefaultsRef: cfg
+
+                tasks:
+                - id: test
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+
+                pluginDefaults:
+                - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTriggerTester
+                  ref: cfg
+                  values:
+                    set: 42
+            """;
+
+        // When
+        var tenant = TestsUtils.randomTenant(PluginDefaultServiceTest.class.getSimpleName());
+        FlowWithSource injected = pluginDefaultService.parseFlowWithAllDefaults(tenant, source, false);
+
+        // Then
+        assertThat(((DefaultTriggerTester) injected.getTriggers().getFirst()).getSet(), is(42));
     }
 
     @SuperBuilder

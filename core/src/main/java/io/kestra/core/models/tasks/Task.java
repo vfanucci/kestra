@@ -46,6 +46,10 @@ abstract public class Task implements TaskInterface {
     protected String version;
 
     @PluginProperty(hidden = true, group = "advanced")
+    @Schema(title = "Reference id of a named `pluginDefaults` bundle to apply to this task.")
+    protected String pluginDefaultsRef;
+
+    @PluginProperty(hidden = true, group = "advanced")
     private String description;
 
     // implementation = Object.class prevents the Micronaut OpenAPI annotation processor from following
