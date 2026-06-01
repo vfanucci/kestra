@@ -461,16 +461,18 @@ public class PluginDefaultService {
             flowAsMap.remove(PLUGIN_DEFAULTS_FIELD);
         }
 
-        // we apply default and overwrite with forced
+        // non-forced type-matched defaults are suppressed for plugins that opted into a named bundle
         if (!defaults.isEmpty()) {
-            flowAsMap = (Map<String, Object>) recursiveDefaults(flowAsMap, defaults);
+            flowAsMap = (Map<String, Object>) recursiveDefaults(flowAsMap, defaults, false);
         }
 
+        // forced type-matched defaults are admin enforcement: always applied, even to a plugin declaring
+        // 'pluginDefaultsRef' (a WARN is logged for those, since the referenced bundle becomes ineffective)
         if (!forced.isEmpty()) {
-            flowAsMap = (Map<String, Object>) recursiveDefaults(flowAsMap, forced);
+            flowAsMap = (Map<String, Object>) recursiveDefaults(flowAsMap, forced, true);
         }
 
-        // named (ref) bundles applied last; they target only the disjoint set of plugins declaring 'pluginDefaultsRef'
+        // named (ref) bundles applied last; they target only plugins declaring 'pluginDefaultsRef'
         if (!refWinners.isEmpty()) {
             flowAsMap = (Map<String, Object>) recursiveRefDefaults(flowAsMap, refWinners);
         }
@@ -561,6 +563,10 @@ public class PluginDefaultService {
 
     @VisibleForTesting
     Object recursiveDefaults(Object object, Map<String, List<PluginDefault>> defaults) {
+        return recursiveDefaults(object, defaults, false);
+    }
+
+    Object recursiveDefaults(Object object, Map<String, List<PluginDefault>> defaults, boolean forcedPass) {
         if (object instanceof Map<?, ?> value) {
             value = value
                 .entrySet()
@@ -568,20 +574,20 @@ public class PluginDefaultService {
                 .map(
                     e -> new AbstractMap.SimpleEntry<>(
                         e.getKey(),
-                        recursiveDefaults(e.getValue(), defaults)
+                        recursiveDefaults(e.getValue(), defaults, forcedPass)
                     )
                 )
                 .collect(HashMap::new, (m, v) -> m.put(v.getKey(), v.getValue()), HashMap::putAll);
 
             if (value.containsKey("type")) {
-                value = defaults(value, defaults);
+                value = defaults(value, defaults, forcedPass);
             }
 
             return value;
         } else if (object instanceof Collection<?> value) {
             return value
                 .stream()
-                .map(r -> recursiveDefaults(r, defaults))
+                .map(r -> recursiveDefaults(r, defaults, forcedPass))
                 .toList();
         } else {
             return object;
@@ -589,9 +595,12 @@ public class PluginDefaultService {
     }
 
     @SuppressWarnings("unchecked")
-    private Map<?, ?> defaults(Map<?, ?> plugin, Map<String, List<PluginDefault>> defaults) {
-        // a plugin opting into a named bundle ('pluginDefaultsRef') receives only that bundle, never type-matched defaults
-        if (plugin.containsKey(PLUGIN_DEFAULTS_REF_FIELD)) {
+    private Map<?, ?> defaults(Map<?, ?> plugin, Map<String, List<PluginDefault>> defaults, boolean forcedPass) {
+        boolean hasRef = plugin.containsKey(PLUGIN_DEFAULTS_REF_FIELD);
+
+        // a plugin opting into a named bundle ('pluginDefaultsRef') ignores non-forced type-matched defaults;
+        // forced (admin-enforced) defaults are always applied regardless, see below.
+        if (hasRef && !forcedPass) {
             return plugin;
         }
 
@@ -608,6 +617,16 @@ public class PluginDefaultService {
 
         if (matching.isEmpty()) {
             return plugin;
+        }
+
+        if (hasRef) {
+            // forced defaults exist for a plugin that requested a named bundle: enforcement wins, the ref is bypassed
+            log.warn(
+                "A forced pluginDefault for type '{}' is enforced on a plugin declaring pluginDefaultsRef '{}'." +
+                " The referenced bundle is ineffective for the enforced properties.",
+                pluginType,
+                plugin.get(PLUGIN_DEFAULTS_REF_FIELD)
+            );
         }
 
         Map<String, Object> result = (Map<String, Object>) plugin;

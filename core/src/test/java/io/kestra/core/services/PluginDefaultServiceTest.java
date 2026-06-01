@@ -485,6 +485,52 @@ class PluginDefaultServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void shouldEnforceForcedTypeDefaultOnRefPluginAndWarn() {
+        // capture WARN from PluginDefaultService logger
+        Logger serviceLogger = (Logger) LoggerFactory.getLogger(PluginDefaultService.class);
+        List<ILoggingEvent> capturedLogs = new ArrayList<>();
+        AppenderBase<ILoggingEvent> appender = new AppenderBase<>() {
+            @Override
+            protected void append(ILoggingEvent event) {
+                capturedLogs.add(event);
+            }
+        };
+        appender.setContext(serviceLogger.getLoggerContext());
+        appender.start();
+        serviceLogger.addAppender(appender);
+
+        try {
+            Map<String, Object> flow = Map.of(
+                "id", "test",
+                "namespace", "type",
+                "tasks", List.of(
+                    Map.of("id", "my-task", "type", "io.kestra.test", "pluginDefaultsRef", "cfg")
+                )
+            );
+            Map<String, List<PluginDefault>> forced = Map.of(
+                "io.kestra.test",
+                List.of(new PluginDefault("io.kestra.test", true, Map.of("forced-key", "enforced")))
+            );
+
+            // When — forced pass over a plugin that opted into a named bundle
+            Object result = pluginDefaultService.recursiveDefaults(flow, forced, true);
+
+            // Then — forced default is enforced despite pluginDefaultsRef, and a WARN is logged
+            Map<String, Object> task = (Map<String, Object>) ((List<Object>) ((Map<String, Object>) result).get("tasks")).getFirst();
+            assertThat(task.get("forced-key"), is("enforced"));
+            assertThat(
+                capturedLogs.stream()
+                    .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN)
+                    .anyMatch(e -> e.getFormattedMessage().contains("pluginDefaultsRef")),
+                is(true)
+            );
+        } finally {
+            serviceLogger.detachAppender(appender);
+        }
+    }
+
+    @Test
     void shouldYieldToTaskValueForNonForcedRef() throws FlowProcessingException {
         // Given — non-forced ref bundle, task sets the property explicitly
         String source = """
