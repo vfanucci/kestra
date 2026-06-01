@@ -2,6 +2,7 @@ package io.kestra.worker.processors.internals;
 
 import java.time.Duration;
 
+import io.kestra.core.exceptions.PluginDefaultsRefNotFoundException;
 import io.kestra.core.exceptions.TimeoutExceededException;
 import io.kestra.core.metrics.MetricRegistry;
 import io.kestra.core.models.flows.State;
@@ -58,6 +59,12 @@ public class WorkerTaskCallable extends AbstractWorkerCallable {
 
     @Override
     public State.Type doCall() throws Exception {
+        // a surviving 'pluginDefaultsRef' means the referenced plugin-defaults bundle could not be resolved
+        String unresolvedRef = workerTask.getTask().getPluginDefaultsRef();
+        if (unresolvedRef != null) {
+            return this.exceptionHandler(new PluginDefaultsRefNotFoundException(unresolvedRef));
+        }
+
         final Duration workerTaskTimeout = runContext.render(workerTask.getTask().getTimeout()).as(Duration.class).orElse(null);
 
         try {

@@ -370,6 +370,14 @@ public class FlowService {
                 constraintsBuilder.namespace(flow.getNamespace());
 
                 modelValidator.validate(flowWithDefaults);
+
+                java.util.Set<String> unresolvedRefs = pluginDefaultService.unresolvedPluginDefaultsRefs(flowWithDefaults);
+                if (!unresolvedRefs.isEmpty()) {
+                    constraintsBuilder.constraints(
+                        "Unknown pluginDefaultsRef: " + String.join(", ", unresolvedRefs) +
+                            ". No matching pluginDefaults 'ref' found at flow, namespace or global level."
+                    );
+                }
             } catch (ConstraintViolationException e) {
                 String friendlyMessage = formatValidationError(e.getMessage());
                 constraintsBuilder.constraints(friendlyMessage);

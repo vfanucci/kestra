@@ -1,0 +1,8 @@
+id: plugin-defaults-ref-not-found
+namespace: io.kestra.tests
+
+tasks:
+  - id: broken
+    type: io.kestra.plugin.core.debug.Return
+    format: "should never run"
+    pluginDefaultsRef: does-not-exist

@@ -58,6 +58,16 @@ public class PluginDefaultsCaseTest {
         assertThat(taskOutputService.getOutputs(execution.getTaskRunList().get(6)).get("def")).isEqualTo("3");
     }
 
+    public void pluginDefaultsRefNotFound() throws TimeoutException, QueueException, io.kestra.core.exceptions.InternalException {
+        Execution execution = runnerUtils.runOne(MAIN_TENANT, "io.kestra.tests", "plugin-defaults-ref-not-found", Duration.ofSeconds(60));
+
+        // the task references a pluginDefaultsRef that does not exist: it must fail at runtime
+        assertThat(execution.getState().getCurrent()).isEqualTo(io.kestra.core.models.flows.State.Type.FAILED);
+        assertThat(execution.getTaskRunList()).hasSize(1);
+        assertThat(execution.getTaskRunList().getFirst().getTaskId()).isEqualTo("broken");
+        assertThat(execution.getTaskRunList().getFirst().getState().getCurrent()).isEqualTo(io.kestra.core.models.flows.State.Type.FAILED);
+    }
+
     @SuperBuilder
     @ToString
     @EqualsAndHashCode

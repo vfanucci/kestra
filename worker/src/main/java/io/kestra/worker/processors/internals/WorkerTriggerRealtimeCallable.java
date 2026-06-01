@@ -4,6 +4,7 @@ import java.util.function.Consumer;
 
 import org.reactivestreams.Publisher;
 
+import io.kestra.core.exceptions.PluginDefaultsRefNotFoundException;
 import io.kestra.core.models.conditions.ConditionContext;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.models.triggers.RealtimeTriggerInterface;
@@ -42,6 +43,12 @@ public class WorkerTriggerRealtimeCallable extends AbstractWorkerTriggerCallable
 
     @Override
     public State.Type doCall() throws Exception {
+        // a surviving 'pluginDefaultsRef' means the referenced plugin-defaults bundle could not be resolved
+        String unresolvedRef = workerTrigger.getTrigger().getPluginDefaultsRef();
+        if (unresolvedRef != null) {
+            return this.exceptionHandler(new PluginDefaultsRefNotFoundException(unresolvedRef));
+        }
+
         Publisher<TriggerEvaluationResult> evaluate;
 
         try {

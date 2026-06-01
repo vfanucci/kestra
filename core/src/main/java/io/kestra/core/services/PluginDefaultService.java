@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -472,8 +473,9 @@ public class PluginDefaultService {
             flowAsMap = (Map<String, Object>) recursiveDefaults(flowAsMap, forced, true);
         }
 
-        // named (ref) bundles applied last; they target only plugins declaring 'pluginDefaultsRef'
-        if (!refWinners.isEmpty()) {
+        // named (ref) bundles applied last; they target only plugins declaring 'pluginDefaultsRef'.
+        // Skipped when only injecting version defaults (refs are not versions and must not be resolved/stripped here).
+        if (!onlyVersions && !refWinners.isEmpty()) {
             flowAsMap = (Map<String, Object>) recursiveRefDefaults(flowAsMap, refWinners);
         }
 
@@ -685,16 +687,46 @@ public class PluginDefaultService {
 
         PluginDefault pluginDefault = refDefaults.get(refId);
         if (pluginDefault == null) {
+            // unknown ref: keep 'pluginDefaultsRef' so a surviving key signals an unresolved reference
+            // (flagged as a validation error in the editor and failed at runtime).
             log.warn("No pluginDefaults bundle found for ref '{}' referenced by plugin '{}'", refId, plugin.get("type"));
             return plugin;
         }
 
-        Map<String, Object> result = (Map<String, Object>) plugin;
+        Map<String, Object> result;
         if (pluginDefault.isForced()) {
             // forced bundle overrides the plugin's own values
-            return MapUtils.deepMerge(result, pluginDefault.getValues());
+            result = MapUtils.deepMerge((Map<String, Object>) plugin, pluginDefault.getValues());
+        } else {
+            // non-forced bundle yields to the plugin's explicit values
+            result = MapUtils.deepMerge(pluginDefault.getValues(), (Map<String, Object>) plugin);
         }
-        // non-forced bundle yields to the plugin's explicit values
-        return MapUtils.deepMerge(pluginDefault.getValues(), result);
+
+        // ref resolved: consume the marker so a surviving 'pluginDefaultsRef' unambiguously means "unresolved"
+        result.remove(PLUGIN_DEFAULTS_REF_FIELD);
+        return result;
+    }
+
+    /**
+     * Returns the distinct {@code pluginDefaultsRef} ids that remain unresolved in an already-defaulted flow.
+     * A reference is unresolved when no matching {@code ref} bundle exists at flow, namespace or global level
+     * (the marker is otherwise stripped during {@link #recursiveRefDefaults(Object, Map)}).
+     */
+    public Set<String> unresolvedPluginDefaultsRefs(FlowInterface flowWithDefaults) {
+        Map<String, Object> flowAsMap = OBJECT_MAPPER.convertValue(flowWithDefaults, JacksonMapper.MAP_TYPE_REFERENCE);
+        Set<String> refs = new LinkedHashSet<>();
+        collectUnresolvedRefs(flowAsMap, refs);
+        return refs;
+    }
+
+    private void collectUnresolvedRefs(Object object, Set<String> refs) {
+        if (object instanceof Map<?, ?> value) {
+            if (value.get(PLUGIN_DEFAULTS_REF_FIELD) instanceof String ref) {
+                refs.add(ref);
+            }
+            value.values().forEach(v -> collectUnresolvedRefs(v, refs));
+        } else if (object instanceof Collection<?> value) {
+            value.forEach(v -> collectUnresolvedRefs(v, refs));
+        }
     }
 }

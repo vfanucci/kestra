@@ -2,6 +2,7 @@ package io.kestra.worker.processors.internals;
 
 import java.util.Optional;
 
+import io.kestra.core.exceptions.PluginDefaultsRefNotFoundException;
 import io.kestra.core.models.conditions.ConditionContext;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.models.triggers.PollingTriggerInterface;
@@ -31,6 +32,12 @@ public class WorkerTriggerCallable extends AbstractWorkerTriggerCallable {
 
     @Override
     public State.Type doCall() throws Exception {
+        // a surviving 'pluginDefaultsRef' means the referenced plugin-defaults bundle could not be resolved
+        String unresolvedRef = workerTrigger.getTrigger().getPluginDefaultsRef();
+        if (unresolvedRef != null) {
+            return this.exceptionHandler(new PluginDefaultsRefNotFoundException(unresolvedRef));
+        }
+
         this.evaluate = this.pollingTrigger.eval(
             conditionContext.withRunContext(runContext),
             triggerContext

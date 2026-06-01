@@ -45,7 +45,7 @@ abstract public class Task implements TaskInterface {
     @PluginProperty(hidden = true, group = "advanced")
     protected String version;
 
-    @PluginProperty(hidden = true, group = "advanced")
+    @PluginProperty(group = "advanced")
     @Schema(title = "Reference id of a named `pluginDefaults` bundle to apply to this task.")
     protected String pluginDefaultsRef;
 

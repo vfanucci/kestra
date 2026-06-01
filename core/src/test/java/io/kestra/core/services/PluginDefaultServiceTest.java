@@ -166,7 +166,8 @@ class PluginDefaultServiceTest {
                     Map.of(
                         "id", "my-task",
                         "type", "io.kestra.test",
-                        "taskRunner", Map.of("type", "io.kestra.runner", "pluginDefaultsRef", "runner-cfg", "cpus", 4)
+                        // 'pluginDefaultsRef' is consumed (stripped) once the bundle is resolved and applied
+                        "taskRunner", Map.of("type", "io.kestra.runner", "cpus", 4)
                     )
                 )
             ), result
@@ -644,9 +645,38 @@ class PluginDefaultServiceTest {
         // When — strictParsing = true
         FlowWithSource injected = pluginDefaultService.injectAllDefaults(flow, true);
 
-        // Then
+        // Then — ref resolved: the marker is consumed (stripped) once the bundle is applied
         assertThat(((DefaultTester) injected.getTasks().getFirst()).getSet(), is(99));
-        assertThat(injected.getTasks().getFirst().getPluginDefaultsRef(), is("cfg"));
+        assertThat(injected.getTasks().getFirst().getPluginDefaultsRef(), is((String) null));
+    }
+
+    @Test
+    void shouldReportUnresolvedRefForValidation() throws FlowProcessingException {
+        // Given — one resolvable ref and one unknown ref
+        String source = """
+                id: ref-validate-test
+                namespace: io.kestra.tests
+
+                tasks:
+                - id: ok
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  pluginDefaultsRef: known
+                - id: broken
+                  type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  pluginDefaultsRef: missing
+
+                pluginDefaults:
+                - type: io.kestra.core.services.PluginDefaultServiceTest$DefaultTester
+                  ref: known
+                  values:
+                    value: 1
+            """;
+
+        var tenant = TestsUtils.randomTenant(PluginDefaultServiceTest.class.getSimpleName());
+        FlowWithSource injected = pluginDefaultService.parseFlowWithAllDefaults(tenant, source, false);
+
+        // When / Then — only the unknown ref survives and is reported
+        assertThat(pluginDefaultService.unresolvedPluginDefaultsRefs(injected), is(java.util.Set.of("missing")));
     }
 
     @Test
