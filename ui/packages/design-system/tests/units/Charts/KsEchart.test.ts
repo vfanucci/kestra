@@ -63,7 +63,7 @@ vi.mock("../../../src/components/Feedback/KsLoading", () => ({
 vi.mock("../../../src/components/Feedback/KsTooltip.vue", () => ({
     default: {
         name: "KsTooltip",
-        props: ["trigger", "visible", "content", "rawContent", "placement"],
+        props: ["trigger", "visible", "content", "rawContent", "placement", "popperOptions"],
         template: "<div class=\"ks-tooltip-stub\"><slot /></div>",
     },
 }))
@@ -130,6 +130,20 @@ describe("KsEchart", () => {
         const wrapper = mountChart({tooltipType: "external"})
         const tooltip = wrapper.findComponent({name: "KsTooltip"})
         expect(tooltip.props("trigger")).toBe("manual")
+    })
+
+    test("external tooltip popper is confined to the viewport so it can never overflow off-screen", () => {
+        const wrapper = mountChart({tooltipType: "external"})
+        const tooltip = wrapper.findComponent({name: "KsTooltip"})
+        const modifiers = (tooltip.props("popperOptions") as {modifiers: {name: string; options: Record<string, unknown>}[]}).modifiers
+
+        const flip = modifiers.find((m) => m.name === "flip")
+        expect(flip?.options.rootBoundary).toBe("viewport")
+
+        const preventOverflow = modifiers.find((m) => m.name === "preventOverflow")
+        expect(preventOverflow?.options.rootBoundary).toBe("viewport")
+        expect(preventOverflow?.options.altAxis).toBe(true)
+        expect(preventOverflow?.options.tether).toBe(false)
     })
 
     // ── loading ────────────────────────────────────────────────────────────────

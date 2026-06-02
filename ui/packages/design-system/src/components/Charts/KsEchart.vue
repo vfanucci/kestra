@@ -173,7 +173,7 @@
     const tooltipPopperOptions = {
         modifiers: [
             {name: "flip", options: {rootBoundary: "viewport", padding: 8}},
-            {name: "preventOverflow", options: {rootBoundary: "viewport", padding: 8}},
+            {name: "preventOverflow", options: {rootBoundary: "viewport", padding: 8, altAxis: true, tether: false}},
         ],
     }
 
@@ -270,7 +270,10 @@
     }
 
     :global(.ks-chart-tooltip) {
+        box-sizing: border-box;
         max-width: min(20rem, 90vw);
+        max-height: calc(100vh - var(--ks-spacing-4));
+        overflow: auto;
         overflow-wrap: anywhere;
     }
 </style>
